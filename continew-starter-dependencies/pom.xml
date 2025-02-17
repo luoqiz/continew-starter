@@ -599,6 +599,13 @@
                 <artifactId>continew-starter-core</artifactId>
                 <version>${revision}</version>
             </dependency>
+
+            <!-- 核心模块 -->
+            <dependency>
+                <groupId>top.continew</groupId>
+                <artifactId>continew-starter-processor</artifactId>
+                <version>${revision}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
