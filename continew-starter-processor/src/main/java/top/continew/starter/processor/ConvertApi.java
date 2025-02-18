@@ -21,7 +21,16 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-@Target({ElementType.TYPE})
+@Target(ElementType.TYPE)
 @Retention(RetentionPolicy.SOURCE)
 public @interface ConvertApi {
+    String sql();                   // 需要解析的SQL语句
+
+    String requestPath() default ""; // 请求路径
+
+    String requestSuffix() default "Query"; // 请求参数类后缀
+
+    String mapperSuffix() default "Mapper";
+
+    String serviceSuffix() default "Service";
 }

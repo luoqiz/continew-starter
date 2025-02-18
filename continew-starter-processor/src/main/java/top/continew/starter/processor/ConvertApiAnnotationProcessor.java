@@ -16,208 +16,352 @@
 
 package top.continew.starter.processor;
 
-import com.sun.source.tree.Tree.Kind;
-import com.sun.tools.javac.api.JavacTrees;
-import com.sun.tools.javac.code.Flags;
-import com.sun.tools.javac.code.Type;
-import com.sun.tools.javac.processing.JavacProcessingEnvironment;
-import com.sun.tools.javac.tree.JCTree;
-import com.sun.tools.javac.tree.JCTree.JCClassDecl;
-import com.sun.tools.javac.tree.TreeMaker;
-import com.sun.tools.javac.tree.TreeTranslator;
-import com.sun.tools.javac.util.Context;
-import com.sun.tools.javac.util.ListBuffer;
-import com.sun.tools.javac.util.Name;
-import com.sun.tools.javac.util.Names;
+import com.google.common.base.CaseFormat;
+import com.squareup.javapoet.*;
+import jakarta.annotation.Resource;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
+import org.apache.ibatis.annotations.Mapper;
+import org.springframework.stereotype.Service;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+import top.continew.starter.processor.utils.SelectSqlParser;
 
 import javax.annotation.processing.*;
 import javax.lang.model.SourceVersion;
-import javax.lang.model.element.Element;
-import javax.lang.model.element.TypeElement;
+import javax.lang.model.element.*;
+import javax.lang.model.util.Elements;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 注解处理器实现(编译期执行),实现类型lombok的@Data注解功能
  * SupportedAnnotationTypes用于指定改processor支持的注解
  */
+
 //@AutoService(Processor.class) // 自动注册处理器
 @SupportedAnnotationTypes("top.continew.starter.processor.ConvertApi")
 @SupportedSourceVersion(SourceVersion.RELEASE_17)
 public class ConvertApiAnnotationProcessor extends AbstractProcessor {
+    // 获取代码生成工具
+    private Elements elementUtils;
+    private Filer filer;
+    private Messager messager;
 
-    /**
-     * 描述语法树的实例类
-     */
-    private JavacTrees javacTrees;
-
-    /**
-     * 创建语法树节点的工具类
-     */
-    private TreeMaker treeMaker;
-
-    /**
-     * 访问语法树中的标识符
-     * eg:names.fromString("str")
-     */
-    private Names names;
-
-    /**
-     * 从AST上下文中初始化JavacTrees,TreeMaker与Names
-     */
     @Override
-    public synchronized void init(ProcessingEnvironment processingEnv) {
-        super.init(processingEnv);
-        Context context = ((JavacProcessingEnvironment)processingEnv).getContext();
-
-        javacTrees = JavacTrees.instance(processingEnv);
-
-        treeMaker = TreeMaker.instance(context);
-
-        names = Names.instance(context);
-
-    }
-
-    /**
-     * 生成getter方法节点
-     */
-    private JCTree.JCMethodDecl genGetterMethod(JCTree.JCVariableDecl jcVariableDecl) {
-        Name variableDeclName = jcVariableDecl.getName();
-        //生成语句: return this.xxx
-        JCTree.JCReturn returnStatement = treeMaker.Return(treeMaker.Select(treeMaker.Ident(names
-            .fromString("this")), variableDeclName));
-        ListBuffer<JCTree.JCStatement> statements = new ListBuffer<JCTree.JCStatement>().append(returnStatement);
-
-        //生成public修饰符
-        JCTree.JCModifiers modifiers = treeMaker.Modifiers(Flags.PUBLIC);
-
-        //拼接方法名 getXxx
-        String getMethodNameStr = "get" + variableDeclName.toString().substring(0, 1).toUpperCase() + variableDeclName
-            .toString()
-            .substring(1);
-        Name getMethodName = names.fromString(getMethodNameStr);
-
-        //生成返回类型标识
-        JCTree.JCExpression returnMethodType = jcVariableDecl.vartype;
-
-        //生成方法体
-        JCTree.JCBlock body = treeMaker.Block(0, statements.toList());
-
-        //生成泛型参数列表
-        com.sun.tools.javac.util.List<JCTree.JCTypeParameter> methodGenericParameterList = com.sun.tools.javac.util.List
-            .nil();
-
-        //生成参数值列表
-        com.sun.tools.javac.util.List<JCTree.JCVariableDecl> methodParameterValList = com.sun.tools.javac.util.List
-            .nil();
-
-        //生成抛出的异常列表
-        com.sun.tools.javac.util.List<JCTree.JCExpression> throwExceptionList = com.sun.tools.javac.util.List.nil();
-
-        //生成方法定义AST节点
-        return treeMaker.MethodDef(modifiers,  //public
-            getMethodName, //方法名: getXxx
-            returnMethodType, //返回类型
-            methodGenericParameterList, //泛型参数列表
-            methodParameterValList, //参数值列表
-            throwExceptionList, //抛出异常列表
-            body, //方法体
-            null);
-    }
-
-    /**
-     * 生成setter方法节点
-     */
-    private JCTree.JCMethodDecl genSetterMethod(JCTree.JCVariableDecl jcVariableDecl) {
-        Name variableDeclName = jcVariableDecl.getName();
-        //生成语句: this.xxx = xxx
-        JCTree.JCExpressionStatement statement = treeMaker.Exec(treeMaker.Assign(treeMaker.Select(treeMaker.Ident(names
-            .fromString("this")), variableDeclName),//左表达式部分: this.xxx
-            treeMaker.Ident(variableDeclName) //右表达式部分: xxx
-        ));
-        ListBuffer<JCTree.JCStatement> statements = new ListBuffer<JCTree.JCStatement>().append(statement);
-
-        //setter方法参数
-        JCTree.JCVariableDecl param = treeMaker.VarDef(treeMaker
-            .Modifiers(Flags.PARAMETER, com.sun.tools.javac.util.List.nil()), //访问修饰符
-            variableDeclName, //变量名字
-            jcVariableDecl.vartype, //变量类型
-            null //变量初始值
-        );
-
-        //生成public修饰符
-        JCTree.JCModifiers modifiers = treeMaker.Modifiers(Flags.PUBLIC);
-
-        //拼接方法名 getXxx
-        String getMethodNameStr = "set" + variableDeclName.toString().substring(0, 1).toUpperCase() + variableDeclName
-            .toString()
-            .substring(1);
-        Name getMethodName = names.fromString(getMethodNameStr);
-
-        //生成返回类型标识 void
-        JCTree.JCExpression returnMethodType = treeMaker.Type(new Type.JCVoidType());
-
-        //生成方法体
-        JCTree.JCBlock body = treeMaker.Block(0, statements.toList());
-
-        //生成泛型参数列表
-        com.sun.tools.javac.util.List<JCTree.JCTypeParameter> methodGenericParameterList = com.sun.tools.javac.util.List
-            .nil();
-
-        //生成参数值列表
-        com.sun.tools.javac.util.List<JCTree.JCVariableDecl> methodParameterList = com.sun.tools.javac.util.List
-            .of(param);
-
-        //生成抛出的异常列表
-        com.sun.tools.javac.util.List<JCTree.JCExpression> throwExceptionList = com.sun.tools.javac.util.List.nil();
-
-        //生成方法定义AST节点
-        return treeMaker.MethodDef(modifiers,  //public
-            getMethodName, // 方法名: setXxx
-            returnMethodType, //返回类型
-            methodGenericParameterList, //泛型参数列表
-            methodParameterList, //参数类型列表
-            throwExceptionList, //抛出异常列表
-            body, //方法体
-            null);
+    public synchronized void init(ProcessingEnvironment env) {
+        super.init(env);
+        elementUtils = env.getElementUtils();
+        filer = env.getFiler();
+        messager = env.getMessager();
     }
 
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
-        //获取标注了MyData注解的元素, 这里实际上只有类元素
-        Set<? extends Element> set = roundEnv.getElementsAnnotatedWith(ConvertApi.class);
-
-        for (Element element : set) {
-            //获取标注了MyData注解的类的语法树
-            JCTree tree = javacTrees.getTree(element);
-
-            //notice: 解决编译错误【java.lang.AssertionError: Value of x -1】
-            // 因为treeMaker.pos的值是不会变的(=-1), 所以在遍历是需要实时更新
-            treeMaker.pos = tree.pos;
-
-            //遍历语法树(在遇到visitClassDef事件, 也就是访问到类定义节点时去修改语法树节点)
-            tree.accept(new TreeTranslator() {
-                @Override
-                public void visitClassDef(JCClassDecl jcClassDecl) {
-                    //获取定义在该类下的所有元素(成员变量, 方法等)
-                    jcClassDecl.defs.stream()
-                        //过滤出变量类型的元素
-                        .filter(o -> o.getKind().equals(Kind.VARIABLE))
-                        //强制转换元素为变量类型元素
-                        .map(o -> ((JCTree.JCVariableDecl)o))
-                        //遍历处理每个变量元素
-                        .forEach(o -> {
-                            //为类定义节点新增getter方法
-                            jcClassDecl.defs = jcClassDecl.defs.prepend(genGetterMethod(o));
-
-                            //为类定义节点新增setter方法
-                            jcClassDecl.defs = jcClassDecl.defs.prepend(genSetterMethod(o));
-                        });
-                    //修改类节点完毕
-                    super.visitClassDef(jcClassDecl);
+        for (Element element : roundEnv.getElementsAnnotatedWith(ConvertApi.class)) {
+            if (element.getKind() == ElementKind.CLASS) {
+                try {
+                    processClass((TypeElement)element);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
                 }
-            });
+            }
+        }
+        return true;
+    }
+
+    private void processClass(TypeElement classElement) throws IOException {
+        // 解析注解参数
+        ConvertApi convertApi = classElement.getAnnotation(ConvertApi.class);
+        // 生成实体类、Mapper、Service、Controller
+        generateEntity(classElement, convertApi);
+        generateRequestEntity(classElement, convertApi);
+
+        // 生成Mapper接口
+        generateMapper(classElement, convertApi);
+        // 生成XML文件
+        generateXml(classElement, convertApi);
+        generateService(classElement, convertApi);
+        generateServiceImpl(classElement, convertApi);
+        generateController(classElement, convertApi);
+
+    }
+
+    private void generateEntity(TypeElement classElement, ConvertApi convertApi) {
+        try {
+            // 获取目标实体类的字段
+            List<VariableElement> entityFields = classElement.getEnclosedElements()
+                .stream()
+                .filter(e -> e.getKind() == ElementKind.FIELD)
+                .map(e -> (VariableElement)e)
+                .collect(Collectors.toList());
+            List<FieldSpec> fields = new ArrayList<>();
+            // 构造实体类的字段
+            for (VariableElement fieldElement : entityFields) {
+                FieldSpec fieldSpec = FieldSpec.builder(TypeName.get(fieldElement.asType()), fieldElement
+                    .getSimpleName()
+                    .toString(), Modifier.PRIVATE).build();
+                fields.add(fieldSpec);
+            }
+            // 构造实体类
+            String entityName = classElement.getSimpleName().toString() + "Entity";
+            TypeSpec entity = TypeSpec.classBuilder(entityName)
+                .addModifiers(Modifier.PUBLIC)
+                .addFields(fields)
+                .addAnnotation(Data.class) // 使用Lombok
+                .build();
+
+            writeJavaFile(classElement, entityName, entity);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
 
-        return true;
+    }
+
+    private void generateRequestEntity(TypeElement classElement, ConvertApi convertApi) {
+        try {
+            List<String> params = SelectSqlParser.extractPlaceholders(convertApi.sql());
+            // 生成请求类（包含WHERE条件参数）
+            String requestClassName = classElement.getSimpleName() + convertApi.requestSuffix();
+            TypeSpec.Builder requestClass = TypeSpec.classBuilder(requestClassName)
+                .addModifiers(Modifier.PUBLIC)
+                .addAnnotation(Data.class); // Lombok
+
+            params.forEach(param -> {
+                String fieldName = convertDatabaseFieldToJava(param); // 转驼峰
+                requestClass.addField(FieldSpec.builder(String.class, fieldName)
+                    .addModifiers(Modifier.PRIVATE)
+                    //                    .addAnnotation(AnnotationSpec.builder(JsonProperty.class).addMember("value", "$S", param).build())
+                    .build());
+            });
+            // 生成Java文件
+            writeJavaFile(classElement, requestClassName, requestClass.build());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+    }
+
+    //
+    //    private void validateFieldMapping(List<String> sqlFields,
+    //                                      List<VariableElement> javaFields) {
+    //        Set<String> javaFieldNames = javaFields.stream()
+    //                .map(e -> e.getSimpleName().toString())
+    //                .collect(Collectors.toSet());
+    //
+    //        sqlFields.forEach(sqlField -> {
+    //            String javaStyle = convertDatabaseFieldToJava(sqlField);
+    //            if (!javaFieldNames.contains(javaStyle)) {
+    //                throw new RuntimeException("字段不匹配: SQL字段[" + sqlField + "] 未在实体类中找到对应属性");
+    //            }
+    //        });
+    //    }
+    //
+
+    private void generateMapper(TypeElement classElement, ConvertApi convertApi) {
+        try {
+            String mapperName = classElement.getSimpleName() + convertApi.mapperSuffix();
+            String requestClass = classElement.getSimpleName() + convertApi.requestSuffix();
+
+            TypeSpec mapper = TypeSpec.interfaceBuilder(mapperName)
+                .addModifiers(Modifier.PUBLIC)
+                .addAnnotation(Mapper.class)
+                .addMethod(MethodSpec.methodBuilder(lowerFirst(classElement.getSimpleName()
+                    .toString()) + "SelectByQuery")
+                    .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT)
+                    .addParameter(ParameterSpec.builder(ClassName
+                        .get(getPackageName(classElement), requestClass), "query").build())
+                    .returns(ParameterizedTypeName.get(ClassName.get(List.class), ClassName
+                        .get(getPackageName(classElement), classElement.getSimpleName() + "Entity")))
+                    .build())
+                .build();
+
+            writeJavaFile(classElement, mapperName, mapper);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void generateXml(TypeElement classElement, ConvertApi convertApi) throws IOException {
+        String xmlContent = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n" + "<!DOCTYPE mapper PUBLIC \"-//mybatis.org//DTD Mapper 3.0//EN\" \"http://mybatis.org/dtd/mybatis-3-mapper.dtd\" >\n" + "<mapper namespace=\"%s\">\n" + "  <select id=\"%s\" resultType=\"%s\">\n" + "    %s\n" + "  </select>\n" + "</mapper>";
+
+        String mapperName = classElement.getSimpleName() + convertApi.mapperSuffix();
+        String xml = String.format(xmlContent, getPackageName(classElement) + "." + mapperName, lowerFirst(classElement
+            .getSimpleName()
+            .toString()) + "SelectByQuery", getPackageName(classElement) + "." + classElement
+                .getSimpleName() + "Entity", convertApi.sql());
+
+        // 写入resources目录
+        String projectRoot = processingEnv.getOptions().get("projectRoot");
+        String resourcePath = projectRoot + "/src/main/resources/mapper";
+        new File(resourcePath).mkdirs();
+        Files.write(Paths.get(resourcePath + "/" + mapperName + ".xml"), xml.getBytes());
+    }
+
+    private void generateService(TypeElement classElement, ConvertApi convertApi) {
+        try {
+            String requestClass = classElement.getSimpleName() + convertApi.requestSuffix();
+            String methodName = lowerFirst(classElement.getSimpleName() + "SelectByQuery");
+            // 生成请求类（包含WHERE条件参数）
+            String requestClassName = classElement.getSimpleName() + convertApi.serviceSuffix();
+            TypeSpec.Builder serviceClass = TypeSpec.interfaceBuilder(requestClassName).addModifiers(Modifier.PUBLIC);
+
+            serviceClass.addMethod(MethodSpec.methodBuilder(methodName)
+                .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT)
+                .addParameter(ParameterSpec.builder(ClassName.get(getPackageName(classElement), requestClass), "query")
+                    .build())
+                .returns(ParameterizedTypeName.get(ClassName.get(List.class), ClassName
+                    .get(getPackageName(classElement), classElement.getSimpleName() + "Entity")))
+                .build());
+            // 生成Java文件
+            writeJavaFile(classElement, requestClassName, serviceClass.build());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void generateServiceImpl(TypeElement classElement, ConvertApi convertApi) {
+        try {
+            String entityElement = classElement.getSimpleName().toString();
+            String requestClass = entityElement + convertApi.requestSuffix();
+            String serviceInterfaceName = entityElement + convertApi.serviceSuffix();
+            String mapperName = entityElement + convertApi.mapperSuffix();
+
+            String methodName = lowerFirst(classElement.getSimpleName() + "SelectByQuery");
+            // 生成请求类（包含WHERE条件参数）
+            String requestClassName = classElement.getSimpleName() + convertApi.serviceSuffix() + "Impl";
+            TypeSpec.Builder serviceClass = TypeSpec.classBuilder(requestClassName)
+                .addModifiers(Modifier.PUBLIC)
+                .addAnnotation(Service.class)
+                .addSuperinterface(ClassName.get(getPackageName(classElement), serviceInterfaceName))
+                .addField(FieldSpec.builder(ClassName
+                    .get(getPackageName(classElement), mapperName), lowerFirst(mapperName), Modifier.PRIVATE)
+                    .addAnnotation(Resource.class)
+                    .build());
+
+            serviceClass.addMethod(MethodSpec.methodBuilder(methodName)
+                .addModifiers(Modifier.PUBLIC, Modifier.PUBLIC)
+
+                .addParameter(ParameterSpec.builder(ClassName.get(getPackageName(classElement), requestClass), "query")
+                    .build())
+                .addCode(String.format("return %s.%s(query);", lowerFirst(mapperName), methodName))
+                .returns(ParameterizedTypeName.get(ClassName.get(List.class), ClassName
+                    .get(getPackageName(classElement), classElement.getSimpleName() + "Entity")))
+                .build());
+            // 生成Java文件
+            writeJavaFile(classElement, requestClassName, serviceClass.build());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void generateController(TypeElement classElement, ConvertApi convertApi) throws IOException {
+        String controllerName = classElement.getSimpleName() + "Controller";
+        String serviceName = classElement.getSimpleName() + convertApi.serviceSuffix();
+        String requestClass = classElement.getSimpleName() + convertApi.requestSuffix();
+        String methodName = lowerFirst(classElement.getSimpleName() + "SelectByQuery");
+
+        TypeSpec controller = TypeSpec.classBuilder(controllerName)
+            .addModifiers(Modifier.PUBLIC)
+            .addAnnotation(RestController.class)
+            .addAnnotation(RequiredArgsConstructor.class) // Lombok生成构造器
+            .addField(FieldSpec.builder(ClassName
+                .get(getPackageName(classElement), serviceName), "service", Modifier.PRIVATE, Modifier.FINAL).build())
+            .addMethod(MethodSpec.methodBuilder("query")
+                .addModifiers(Modifier.PUBLIC)
+                //                        .addAnnotation(AnnotationSpec.builder(PostMapping.class)
+                .addAnnotation(AnnotationSpec.builder(GetMapping.class)
+                    .addMember("value", "\"" + convertApi.requestPath() + "\"")
+                    .build())
+                .addParameter(ParameterSpec.builder(ClassName.get(getPackageName(classElement), requestClass), "query")
+                    //                                .addAnnotation(RequestBody.class)
+                    .build())
+                .returns(ParameterizedTypeName.get(ClassName.get(List.class), ClassName
+                    .get(getPackageName(classElement), classElement.getSimpleName() + "Entity")))
+                .addStatement(String.format("return service.%s(%s)", methodName, "query"))
+                .build())
+            .build();
+
+        writeJavaFile(classElement, controllerName, controller);
+        //            JavaFile.builder(getPackageName(entityElement), controller)
+        //                    .build()
+        //                    .writeTo(filer);
+    }
+
+    @Override
+    public Set<String> getSupportedAnnotationTypes() {
+        return Set.of(ConvertApi.class.getCanonicalName());
+    }
+
+    @Override
+    public SourceVersion getSupportedSourceVersion() {
+        return SourceVersion.latestSupported();
+    }
+
+    private String getPackageName(TypeElement typeElement) {
+        return elementUtils.getPackageOf(typeElement).getQualifiedName().toString();
+    }
+
+    // 数据库字段转Java属性名（如 user_name -> userName）
+    private String convertDatabaseFieldToJava(String dbField) {
+        return CaseFormat.LOWER_UNDERSCORE.to(CaseFormat.LOWER_CAMEL, dbField);
+    }
+
+    // 首字母小写
+    private String lowerFirst(String str) {
+        return str.substring(0, 1).toLowerCase() + str.substring(1);
+    }
+
+    // 获取项目根路径（关键修改）
+    private Path getFileRoot(Element element) {
+        // 从编译参数获取项目路径
+        String projectRoot = processingEnv.getOptions().get("projectRoot");
+        if (projectRoot == null) {
+            return null;
+        }
+        //        String relativePath = getPackageName((TypeElement)element).replace(".", "/");
+        Path sourcePath = Paths.get(projectRoot);
+        //        return sourcePath.resolve("src/main/java/" + relativePath);
+        return sourcePath.resolve("src/main/java/");
+    }
+
+    // 生成Java文件到源码目录
+    private void writeJavaFile(TypeElement classElement, String className, TypeSpec typeSpec) throws IOException {
+        Path filePath = getFileRoot(classElement);
+        if (filePath == null) {
+            JavaFile.builder(getPackageName(classElement), typeSpec).build().writeTo(filer);
+            return;
+        }
+        Path outputPath = filePath.resolve(className + ".java");
+        Files.createDirectories(outputPath.getParent());
+
+        // 检查文件是否存在
+        if (!Files.exists(outputPath)) {
+            //            messager.printMessage(Diagnostic.Kind.ERROR, "文件不存在 --- " + outputPath);
+            //            System.err.println("文件不存在 --- " + outputPath);
+            JavaFile.builder(getPackageName(classElement), typeSpec).build().writeTo(filePath);
+        }
+    }
+
+    // 生成XML文件到resources目录
+    private void writeXmlFile(TypeElement classElement, String mapperName, String xmlContent) throws IOException {
+        String projectRoot = processingEnv.getOptions().get("projectRoot");
+        if (projectRoot == null) {
+            projectRoot = "./";
+        }
+        Path xmlPath = Paths.get(projectRoot).resolve("src/main/resources/mapper").resolve(mapperName + ".xml");
+
+        Files.createDirectories(xmlPath.getParent());
+        if (!Files.exists(xmlPath)) {
+            Files.write(xmlPath, xmlContent.getBytes(StandardCharsets.UTF_8));
+        }
     }
 }
