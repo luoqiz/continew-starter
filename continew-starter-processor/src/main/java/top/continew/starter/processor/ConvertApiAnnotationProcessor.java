@@ -92,7 +92,6 @@ public class ConvertApiAnnotationProcessor extends AbstractProcessor {
         generateService(classElement, convertApi);
         generateServiceImpl(classElement, convertApi);
         generateController(classElement, convertApi);
-
     }
 
     private void generateEntity(TypeElement classElement, ConvertApi convertApi) {
